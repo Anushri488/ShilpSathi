@@ -683,3 +683,6 @@ a.list-row:hover, .list-row.selected { background: #f8f5f0; }
 .market-site { font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--blue-soft); color: var(--blue-dark); white-space: nowrap; }
 .guess { color: #a8541a; font-weight: 600; }
 .input-guess { border-color: #f0b27a !important; background: var(--orange-soft) !important; }
+.mic-pick { display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 8px; background: #fff; color: var(--muted); max-width: 100%; }
+.mic-pick select { border: 0; box-shadow: none !important; padding: 7px 4px; font-size: 0.84rem; max-width: 320px; }
+.mic-pick.warn { border-color: var(--red); background: var(--red-soft); }

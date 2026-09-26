@@ -8,7 +8,7 @@ import { Card, Button, Field, Badge, ProductImage, toast } from "../../component
 import { useSession } from "../../session";
 import { CRAFTS, VOICE_LANGUAGES, DEFAULT_DAILY_WAGE, inr, craftLabel } from "../../constants";
 import { enhancePhoto, fileToDataUrl, stripDataUrl, toUploadJpeg, padToSquare } from "../../imageTools";
-import { canRecord, startRecorder, toUploadAudio } from "../../audioTools";
+import { canRecord, startRecorder, toUploadAudio, listMics } from "../../audioTools";
 import * as api from "../../api";
 
 const STEPS = [
@@ -154,27 +154,35 @@ function EnhanceStep({ photos, analysis, busy, craft, onUseCraft, onRetake, onNe
 }
 
 /* ---------------- Step 3: voice ---------------- */
-const SpeechRecognition = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
 const MAX_SECONDS = 180;
+const MIC_KEY = "shilpsaathi.mic";
+const readMic = () => { try { return localStorage.getItem(MIC_KEY) || ""; } catch { return ""; } };
 const VOICE_OPTIONS = [{ code: "hi-en", label: "Hindi + English (mixed)" }, ...VOICE_LANGUAGES];
 
 function VoiceStep({ craft, photo, voice, setVoice, onNext }) {
   const [lang, setLang] = useState("hi-en");
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
-  const [caption, setCaption] = useState("");
   const [processing, setProcessing] = useState(false);
   const [bars, setBars] = useState(() => Array(36).fill(0.1));
+  const [mics, setMics] = useState([]);
+  const [micId, setMicId] = useState(readMic);
+  const [micSilent, setMicSilent] = useState(false);
   const recRef = useRef(null);
-  const captionRef = useRef(null);
   const timer = useRef(null);
   const meter = useRef(null);
+
+  // Laptops often have several inputs (built-in, headset, "Stereo Mix"…) — let the artisan pick
+  useEffect(() => { listMics().then(setMics); }, []);
+  const chooseMic = (id) => {
+    setMicId(id);
+    setMicSilent(false);
+    try { localStorage.setItem(MIC_KEY, id); } catch { /* ignore */ }
+  };
 
   const cleanup = () => {
     clearInterval(timer.current);
     cancelAnimationFrame(meter.current);
-    try { captionRef.current?.abort(); } catch { /* ignore */ }
-    captionRef.current = null;
   };
   useEffect(() => () => { cleanup(); recRef.current?.cancel(); }, []);
 
@@ -197,12 +205,19 @@ function VoiceStep({ craft, photo, voice, setVoice, onNext }) {
   const start = async () => {
     if (!canRecord()) return toast("This browser can't record audio — please type your description", "red");
     try {
-      recRef.current = await startRecorder();
-    } catch {
-      return toast("Microphone permission denied — allow the mic or type instead", "red");
+      recRef.current = await startRecorder(micId || undefined);
+    } catch (e) {
+      // A saved mic that was unplugged → fall back to the default one
+      if (micId && (e.name === "OverconstrainedError" || e.name === "NotFoundError")) {
+        chooseMic("");
+        try { recRef.current = await startRecorder(); } catch { return toast("Microphone permission denied — allow the mic or type instead", "red"); }
+      } else {
+        return toast("Microphone permission denied — allow the mic or type instead", "red");
+      }
     }
+    listMics().then(setMics); // labels become available after permission
     setSeconds(0);
-    setCaption("");
+    setMicSilent(false);
     setRecording(true);
     timer.current = setInterval(() => setSeconds((s) => s + 1), 1000);
     const tick = () => {
@@ -211,17 +226,6 @@ function VoiceStep({ craft, photo, voice, setVoice, onNext }) {
       meter.current = requestAnimationFrame(tick);
     };
     tick();
-    // Optional live captions (Chrome/Edge) — the real transcript comes from the recording
-    if (SpeechRecognition) {
-      const sr = new SpeechRecognition();
-      sr.lang = lang === "hi-en" ? "hi-IN" : lang;
-      sr.continuous = true;
-      sr.interimResults = true;
-      sr.onresult = (e) => setCaption(Array.from(e.results).map((r) => r[0].transcript).join(" "));
-      sr.onerror = () => {};
-      captionRef.current = sr;
-      try { sr.start(); } catch { /* ignore */ }
-    }
   };
 
   const stop = async () => {
@@ -230,8 +234,13 @@ function VoiceStep({ craft, photo, voice, setVoice, onNext }) {
     const rec = recRef.current;
     recRef.current = null;
     if (!rec) return;
+    const heard = rec.maxLevel();
     const blob = await rec.stop();
-    if (blob.size < 2000) return toast("Recording too short — speak a little longer", "red");
+    if (seconds < 1) return toast("Recording too short — speak a little longer", "red");
+    if (heard < 0.03) {
+      setMicSilent(true);
+      return toast("Mic se awaaz nahi aayi — neeche se sahi mic chunein aur dobara bolein", "red");
+    }
     setProcessing(true);
     await transcribe(await toUploadAudio(blob));
   };
@@ -265,7 +274,17 @@ function VoiceStep({ craft, photo, voice, setVoice, onNext }) {
         <div className={`wave live-wave ${recording ? "on" : ""}`} aria-hidden="true">
           {bars.map((b, i) => <i key={i} style={{ height: `${Math.round(4 + b * 30)}px` }} />)}
         </div>
-        {recording && <p className="live-text">{caption || "Listening… सुन रहे हैं… (bolte rahiye, poori baat record ho rahi hai)"}</p>}
+        {mics.length > 1 && (
+          <label className={`mic-pick ${micSilent ? "warn" : ""}`}>
+            <Mic size={14} />
+            <select value={micId} onChange={(e) => chooseMic(e.target.value)} disabled={recording || processing} aria-label="Microphone">
+              <option value="">Default microphone</option>
+              {mics.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+            </select>
+          </label>
+        )}
+        {micSilent && <p className="form-error">Is mic se koi awaaz nahi aayi. Doosra mic chunein, ya laptop ki sound settings mein mic ka volume / mute check karein.</p>}
+        {recording && <p className="live-text">Listening… सुन रहे हैं… (bolte rahiye — lines upar-neeche hil rahi hain to mic sun raha hai)</p>}
         {processing && <p className="live-text"><Sparkles size={14} className="pulse" /> AI aapki poori baat sun raha hai… this can take up to 30 seconds</p>}
         <Button variant="blue" className="btn-wide" onClick={recording ? stop : start} loading={processing} icon={recording ? Square : Mic}>
           {processing ? "Transcribing…" : recording ? "Stop & Process" : voice ? "Record again" : "Start Speaking"}
